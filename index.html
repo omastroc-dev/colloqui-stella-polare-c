@@ -30,6 +30,19 @@
   .slot:hover,.slot:focus-visible{background:var(--blu2);color:#fff;outline:none}
   .slot[disabled]{border-color:var(--bordo);background:#eef1f6;color:#9aa3b2;text-decoration:line-through;cursor:not-allowed}
   .vuoto{color:var(--muto)}
+  .cal-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-weight:700;color:var(--blu);text-transform:capitalize}
+  .cal-nav{border:1px solid var(--bordo);background:#fff;border-radius:8px;width:40px;height:40px;font-size:1.2rem;cursor:pointer;color:var(--blu)}
+  .cal-nav[disabled]{opacity:.35;cursor:not-allowed}
+  .cal{display:grid;grid-template-columns:repeat(7,1fr);gap:4px;max-width:380px}
+  .cal .dow{text-align:center;font-size:.75rem;color:var(--muto);padding:4px 0}
+  .cal .gg{border:2px solid var(--blu2);background:#fff;color:var(--blu);border-radius:8px;font:inherit;font-weight:600;aspect-ratio:1;cursor:pointer;min-height:40px}
+  .cal .gg:hover,.cal .gg:focus-visible{background:var(--blu2);color:#fff;outline:none}
+  .cal .gg[aria-pressed="true"]{background:var(--blu);color:#fff;border-color:var(--blu)}
+  .cal .gg[disabled]{border-color:transparent;background:transparent;color:#b3bbc8;cursor:not-allowed;font-weight:400}
+  .cal .vuota{visibility:hidden}
+  .ora-titolo{margin:14px 0 6px;font-weight:700;color:var(--blu)}
+  .slots.fini{grid-template-columns:repeat(auto-fill,minmax(70px,1fr))}
+  .slots.fini .slot{padding:8px 2px;font-size:.9rem}
   dialog{border:none;border-radius:14px;padding:0;max-width:440px;width:calc(100% - 28px);box-shadow:0 10px 40px rgba(0,0,0,.3)}
   dialog::backdrop{background:rgba(10,20,40,.5)}
   dialog form,.dlg-body{padding:20px}
@@ -107,7 +120,7 @@
     <label for="fGenitore">Nome e cognome del genitore *</label>
     <input type="text" id="fGenitore" maxlength="80" autocomplete="name" required>
 
-    <label for="fBambino">Nome del bambino/a *</label>
+    <label for="fBambino">Nome e cognome del bambino/a *</label>
     <input type="text" id="fBambino" maxlength="60" autocomplete="off" required>
 
     <label for="fContatto">Telefono o email <small>(facoltativo, solo per urgenze)</small></label>
@@ -151,6 +164,7 @@
   var occupati = new Set();
   var slots = [];
   var teacherAttivo = C.teachers[0].id;
+  var modo = "main", altroData = null, meseVis = null;
   var slotScelto = null;
   var ultima = null;
 
@@ -170,22 +184,44 @@
   function etichetta(s) {
     var t = teacherById(s.teacherId);
     var base = giornoLungo(s.date) + " · " + s.time + "–" + s.endTime;
-    return C.teachers.length > 1 ? t.name + " — " + base : base;
+    return t.name + " — " + base;
+  }
+
+  function isoDate(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+
+  // Date selezionabili per l'opzione "Un altro giorno"
+  function altroGiorni() {
+    var A = C.altro; if (!A || !A.enabled) return [];
+    var f = A.from.split("-").map(Number), t = A.to.split("-").map(Number);
+    var cur = new Date(f[0], f[1] - 1, f[2], 12), fine = new Date(t[0], t[1] - 1, t[2], 12), out = [];
+    while (cur <= fine) {
+      var iso = isoDate(cur);
+      if ((A.weekdays || [1, 2, 3, 4, 5]).indexOf(cur.getDay()) >= 0 && (A.exclude || []).indexOf(iso) < 0) out.push(iso);
+      cur.setDate(cur.getDate() + 1);
+    }
+    return out;
+  }
+
+  function riempi(out, teacherId, prefix, date, start, end, step, pausa) {
+    var a = start.split(":").map(Number), b = end.split(":").map(Number);
+    var cur = a[0] * 60 + a[1], fine = b[0] * 60 + b[1];
+    while (cur + step <= fine) {
+      var time = fmtMin(cur);
+      out.push({ id: prefix + "|" + date + "|" + time, teacherId: teacherId, date: date, time: time, endTime: fmtMin(cur + step), altro: prefix === "altro" });
+      cur += step + (pausa || 0);
+    }
   }
 
   function generaSlots() {
     var out = [];
     C.teachers.forEach(function (t) {
-      C.days.forEach(function (d) {
-        var a = d.start.split(":").map(Number), b = d.end.split(":").map(Number);
-        var cur = a[0] * 60 + a[1], fine = b[0] * 60 + b[1];
-        while (cur + C.slotMinutes <= fine) {
-          var time = fmtMin(cur);
-          out.push({ id: t.id + "|" + d.date + "|" + time, teacherId: t.id, date: d.date, time: time, endTime: fmtMin(cur + C.slotMinutes) });
-          cur += C.slotMinutes + (C.breakMinutes || 0);
-        }
-      });
+      C.days.forEach(function (d) { riempi(out, t.id, t.id, d.date, d.start, d.end, C.slotMinutes, C.breakMinutes); });
     });
+    if (C.altro && C.altro.enabled) {
+      altroGiorni().forEach(function (date) {
+        riempi(out, C.teachers[0].id, "altro", date, C.altro.start, C.altro.end, C.altro.slotMinutes || 5, 0);
+      });
+    }
     return out;
   }
 
@@ -238,12 +274,13 @@
   }
 
   function disegna() {
+    if (modo === "altro") return disegnaAltro();
     var g = $("griglia");
     g.textContent = "";
     var adesso = new Date();
     var mie = lsGet(LS_MIE, []).map(function (m) { return m.slotId; });
     var perGiorno = {};
-    slots.filter(function (s) { return s.teacherId === teacherAttivo; }).forEach(function (s) {
+    slots.filter(function (s) { return s.teacherId === teacherAttivo && !s.altro; }).forEach(function (s) {
       (perGiorno[s.date] = perGiorno[s.date] || []).push(s);
     });
     var giorni = Object.keys(perGiorno).sort();
@@ -273,15 +310,101 @@
   }
 
   function disegnaTabs() {
-    if (C.teachers.length < 2) return;
+    if (!(C.altro && C.altro.enabled)) return;
     var t = $("tabs"); t.hidden = false; t.textContent = "";
-    C.teachers.forEach(function (te) {
+    [["main", C.labelGiornoUnico || "Giorno dei colloqui"], ["altro", C.altro.label || "Un altro giorno"]].forEach(function (v) {
       var b = document.createElement("button");
-      b.type = "button"; b.className = "tab"; b.textContent = te.name;
+      b.type = "button"; b.className = "tab"; b.textContent = v[1];
       b.setAttribute("role", "tab");
-      b.setAttribute("aria-selected", te.id === teacherAttivo ? "true" : "false");
-      b.addEventListener("click", function () { teacherAttivo = te.id; disegnaTabs(); disegna(); });
+      b.setAttribute("aria-selected", v[0] === modo ? "true" : "false");
+      b.addEventListener("click", function () { modo = v[0]; disegnaTabs(); disegna(); });
       t.appendChild(b);
+    });
+  }
+
+  var MESI_DOW = ["Lun", "Mar", "Mer", "Gio", "Ven", "Sab", "Dom"];
+
+  function disegnaAltro() {
+    var g = $("griglia"); g.textContent = "";
+    var giorni = altroGiorni();
+    if (!giorni.length) { g.innerHTML = '<p class="vuoto">Nessun giorno disponibile.</p>'; return; }
+    var adesso = new Date();
+    var consentiti = {}; giorni.forEach(function (d) { consentiti[d] = true; });
+    var liberi = {};
+    slots.forEach(function (s) {
+      if (s.altro && !occupati.has(s.id) && slotInizio(s) >= adesso) liberi[s.date] = (liberi[s.date] || 0) + 1;
+    });
+    var primo = giorni[0].split("-").map(Number), ultimo = giorni[giorni.length - 1].split("-").map(Number);
+    if (!meseVis) {
+      var inizio = giorni.filter(function (d) { return liberi[d]; })[0] || giorni[0];
+      var q = inizio.split("-").map(Number); meseVis = { y: q[0], m: q[1] - 1 };
+    }
+    var idx = meseVis.y * 12 + meseVis.m;
+
+    var p = document.createElement("p"); p.className = "avviso";
+    p.textContent = "Scegli il giorno dal calendario, poi l'orario (ogni " + (C.altro.slotMinutes || 5) + " minuti, dalle " + C.altro.start + " alle " + C.altro.end + ").";
+    p.style.marginBottom = "10px"; g.appendChild(p);
+
+    var head = document.createElement("div"); head.className = "cal-head";
+    var prev = document.createElement("button"); prev.type = "button"; prev.className = "cal-nav"; prev.textContent = "‹"; prev.setAttribute("aria-label", "Mese precedente");
+    var next = document.createElement("button"); next.type = "button"; next.className = "cal-nav"; next.textContent = "›"; next.setAttribute("aria-label", "Mese successivo");
+    prev.disabled = idx <= primo[0] * 12 + primo[1] - 1;
+    next.disabled = idx >= ultimo[0] * 12 + ultimo[1] - 1;
+    prev.addEventListener("click", function () { var i = idx - 1; meseVis = { y: Math.floor(i / 12), m: i % 12 }; disegnaAltro(); });
+    next.addEventListener("click", function () { var i = idx + 1; meseVis = { y: Math.floor(i / 12), m: i % 12 }; disegnaAltro(); });
+    var titolo = document.createElement("span");
+    titolo.textContent = new Date(meseVis.y, meseVis.m, 1).toLocaleDateString("it-IT", { month: "long", year: "numeric" });
+    head.appendChild(prev); head.appendChild(titolo); head.appendChild(next); g.appendChild(head);
+
+    var cal = document.createElement("div"); cal.className = "cal";
+    MESI_DOW.forEach(function (n) { var d = document.createElement("div"); d.className = "dow"; d.textContent = n; cal.appendChild(d); });
+    var off = (new Date(meseVis.y, meseVis.m, 1).getDay() + 6) % 7;
+    for (var i = 0; i < off; i++) { var v = document.createElement("div"); v.className = "vuota"; cal.appendChild(v); }
+    var nGiorni = new Date(meseVis.y, meseVis.m + 1, 0).getDate();
+    for (var n = 1; n <= nGiorni; n++) {
+      (function (n) {
+        var iso = meseVis.y + "-" + pad(meseVis.m + 1) + "-" + pad(n);
+        var b = document.createElement("button"); b.type = "button"; b.className = "gg"; b.textContent = n;
+        var ok = consentiti[iso] && liberi[iso] > 0;
+        b.disabled = !ok;
+        b.setAttribute("aria-pressed", altroData === iso ? "true" : "false");
+        if (ok) {
+          b.setAttribute("aria-label", giornoLungo(iso) + ", " + liberi[iso] + " orari liberi");
+          b.addEventListener("click", function () { altroData = iso; disegnaAltro(); });
+        }
+        cal.appendChild(b);
+      })(n);
+    }
+    g.appendChild(cal);
+
+    if (!altroData || !(liberi[altroData] > 0)) {
+      var h = document.createElement("p"); h.className = "vuoto"; h.style.marginTop = "12px";
+      h.textContent = "Seleziona un giorno per vedere gli orari disponibili.";
+      g.appendChild(h); return;
+    }
+    var t = document.createElement("div"); t.className = "giorno"; t.textContent = giornoLungo(altroData); g.appendChild(t);
+    var mie = lsGet(LS_MIE, []).map(function (m) { return m.slotId; });
+    var perOra = {};
+    slots.filter(function (s) { return s.altro && s.date === altroData; }).forEach(function (s) {
+      var h = s.time.slice(0, 2); (perOra[h] = perOra[h] || []).push(s);
+    });
+    Object.keys(perOra).sort().forEach(function (h) {
+      var l = document.createElement("div"); l.className = "ora-titolo"; l.textContent = "Ore " + h; g.appendChild(l);
+      var box = document.createElement("div"); box.className = "slots fini";
+      perOra[h].forEach(function (s) {
+        var b = document.createElement("button"); b.type = "button"; b.className = "slot"; b.textContent = s.time;
+        var passato = slotInizio(s) < adesso, preso = occupati.has(s.id);
+        if (preso || passato) {
+          b.disabled = true;
+          b.title = mie.indexOf(s.id) >= 0 ? "Prenotato da te" : (passato ? "Non più disponibile" : "Già prenotato");
+          b.setAttribute("aria-label", s.time + (preso ? " già prenotato" : " non disponibile"));
+        } else {
+          b.setAttribute("aria-label", "Prenota " + etichetta(s));
+          b.addEventListener("click", function () { apriForm(s); });
+        }
+        box.appendChild(b);
+      });
+      g.appendChild(box);
     });
   }
 
@@ -320,7 +443,8 @@
     ev.preventDefault();
     var gen = $("fGenitore").value.trim(), bam = $("fBambino").value.trim(), con = $("fContatto").value.trim();
     var m = $("msgPren");
-    if (gen.length < 3 || bam.length < 2) { m.textContent = "Inserisci nome del genitore e del bambino/a."; return; }
+    if (gen.length < 3) { m.textContent = "Inserisci il tuo nome e cognome."; return; }
+    if (bam.length < 3) { m.textContent = "Inserisci il nome del bambino/a: è necessario per il colloquio."; return; }
     if (!$("fPrivacy").checked) { m.textContent = "Per proseguire serve il consenso al trattamento dei dati."; return; }
     m.textContent = ""; $("btnConferma").disabled = true;
     var s = slotScelto;
