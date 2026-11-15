@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>Agenda colloqui - Area maestre</title>
+<style>
+  :root{--blu:#14305e;--blu2:#1f4a8a;--giallo:#f5b800;--bg:#f3f6fb;--testo:#1c2430;--muto:#5b6678;--err:#b3261e;--bordo:#d5dce8}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif;background:var(--bg);color:var(--testo);line-height:1.45}
+  header{background:linear-gradient(135deg,var(--blu),var(--blu2));color:#fff;padding:24px 16px 28px;text-align:center}
+  header .stella{font-size:30px;color:var(--giallo);line-height:1}
+  header h1{margin:6px 0 2px;font-size:clamp(20px,5vw,26px)}
+  header p{margin:0;opacity:.9}
+  main{max-width:860px;margin:-16px auto 40px;padding:0 14px}
+  .card{background:#fff;border-radius:14px;box-shadow:0 2px 10px rgba(20,48,94,.10);padding:18px;margin-bottom:16px}
+  h2{margin:0 0 10px;font-size:1.1rem;color:var(--blu);text-transform:capitalize}
+  label{display:block;font-weight:600;margin:0 0 4px}
+  input[type=password],input[type=text]{width:100%;padding:11px;border:1px solid var(--bordo);border-radius:8px;font:inherit}
+  .check{display:flex;gap:8px;align-items:center;font-weight:400;font-size:.9rem;color:var(--muto);margin-top:10px}
+  .btn{border:none;border-radius:9px;padding:11px 18px;font:inherit;font-weight:600;cursor:pointer}
+  .primario{background:var(--blu);color:#fff;margin-top:12px}
+  .secondario{background:#e8edf5;color:var(--blu)}
+  .msg{margin-top:10px;font-size:.92rem}.msg.err{color:var(--err)}
+  .barra{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+  .barra .info{color:var(--muto);font-size:.92rem}
+  table{width:100%;border-collapse:collapse}
+  td{padding:10px 8px;border-top:1px solid var(--bordo);vertical-align:top}
+  tr:first-child td{border-top:none}
+  td.ora{width:110px;font-weight:700;color:var(--blu);white-space:nowrap}
+  .occupato td.chi{font-weight:600}
+  .occupato .sub{display:block;font-weight:400;color:var(--muto);font-size:.88rem}
+  .libero td{color:#9aa3b2}
+  .libero td.chi{font-style:italic}
+  .vuoto{color:var(--muto)}
+  @media print{
+    header,.barra .btn,#login{display:none}
+    body{background:#fff}.card{box-shadow:none;border:1px solid #ccc;break-inside:avoid}
+    .libero{display:none}
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="stella" aria-hidden="true">★</div>
+  <h1>Agenda colloqui · Area maestre</h1>
+  <p id="sotto"></p>
+</header>
+
+<main>
+  <section class="card" id="login">
+    <form id="formLogin">
+      <label for="pin">Codice di accesso</label>
+      <input type="password" id="pin" autocomplete="current-password" required>
+      <label class="check"><input type="checkbox" id="ricorda"> Ricorda su questo dispositivo</label>
+      <button class="btn primario" type="submit">Entra</button>
+      <div id="msgLogin" class="msg err" aria-live="polite"></div>
+    </form>
+  </section>
+
+  <section id="agenda" hidden>
+    <div class="card barra">
+      <div class="info" id="riepilogo"></div>
+      <div>
+        <button class="btn secondario" id="btnAgg" type="button">Aggiorna</button>
+        <button class="btn secondario" id="btnStampa" type="button">Stampa</button>
+        <button class="btn secondario" id="btnEsci" type="button">Esci</button>
+      </div>
+    </div>
+    <div id="giorni"></div>
+  </section>
+</main>
+
+<script src="config.js"></script>
+<script>
+(function () {
+  "use strict";
+  var C = window.CONFIG;
+  var KEY = "sp_maestre_pin";
+  var pin = "";
+  var timer = null;
+  var $ = function (id) { return document.getElementById(id); };
+  var pad = function (n) { return (n < 10 ? "0" : "") + n; };
+  var fmtMin = function (m) { return pad(Math.floor(m / 60)) + ":" + pad(m % 60); };
+
+  $("sotto").textContent = C.scuola + " · " + C.sezione;
+
+  function giornoLungo(iso) {
+    var p = iso.split("-").map(Number);
+    return new Date(p[0], p[1] - 1, p[2]).toLocaleDateString("it-IT", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+  }
+
+  function generaSlots() {
+    var out = [];
+    C.teachers.forEach(function (t) {
+      C.days.forEach(function (d) {
+        var a = d.start.split(":").map(Number), b = d.end.split(":").map(Number);
+        var cur = a[0] * 60 + a[1], fine = b[0] * 60 + b[1];
+        while (cur + C.slotMinutes <= fine) {
+          out.push({ id: t.id + "|" + d.date + "|" + fmtMin(cur), date: d.date, time: fmtMin(cur), end: fmtMin(cur + C.slotMinutes) });
+          cur += C.slotMinutes + (C.breakMinutes || 0);
+        }
+      });
+    });
+    return out;
+  }
+
+  function carica(silenzioso) {
+    return fetch(C.API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ action: "agenda", pin: pin })
+    }).then(function (r) { return r.json(); }).then(function (res) {
+      if (res && res.ok) {
+        $("login").hidden = true; $("agenda").hidden = false;
+        disegna(res.items || []);
+        return true;
+      }
+      if (res && res.error === "LOCKED") throw new Error(res.message);
+      var e = new Error("Codice non corretto."); e.pin = true; throw e;
+    });
+  }
+
+  function riga(ora, chi, sub, occupato) {
+    var tr = document.createElement("tr");
+    tr.className = occupato ? "occupato" : "libero";
+    var a = document.createElement("td"); a.className = "ora"; a.textContent = ora;
+    var b = document.createElement("td"); b.className = "chi"; b.textContent = chi;
+    if (sub) { var s = document.createElement("span"); s.className = "sub"; s.textContent = sub; b.appendChild(s); }
+    tr.appendChild(a); tr.appendChild(b);
+    return tr;
+  }
+
+  function disegna(items) {
+    var byId = {};
+    items.forEach(function (i) { byId[i.slotId] = i; });
+    var slots = generaSlots(), usati = {};
+    var perGiorno = {};
+    slots.forEach(function (s) { (perGiorno[s.date] = perGiorno[s.date] || []).push(s); });
+    var box = $("giorni"); box.textContent = "";
+    Object.keys(perGiorno).sort().forEach(function (d) {
+      var card = document.createElement("section"); card.className = "card";
+      var h = document.createElement("h2"); h.textContent = giornoLungo(d); card.appendChild(h);
+      var tb = document.createElement("table");
+      perGiorno[d].forEach(function (s) {
+        var it = byId[s.id]; usati[s.id] = true;
+        if (it) {
+          var sub = "Genitore: " + it.genitore + (it.contatto ? " · " + it.contatto : "");
+          tb.appendChild(riga(s.time + "–" + s.end, "Genitore di " + it.bambino, sub, true));
+        } else {
+          tb.appendChild(riga(s.time + "–" + s.end, "libero", "", false));
+        }
+      });
+      card.appendChild(tb); box.appendChild(card);
+    });
+    // Colloqui fuori dal giorno comune ("un altro giorno"): raggruppati per data, in ordine di orario
+    var altre = items.filter(function (i) { return !usati[i.slotId]; }).sort(function (a, b) {
+      var x = a.slotId.split("|"), y = b.slotId.split("|");
+      return (x[1] + x[2]).localeCompare(y[1] + y[2]);
+    });
+    var perData = {}, ordine = [];
+    altre.forEach(function (it) {
+      var p = it.slotId.split("|");
+      if (!perData[p[1]]) { perData[p[1]] = []; ordine.push(p[1]); }
+      perData[p[1]].push({ it: it, ora: p[2] });
+    });
+    ordine.forEach(function (data) {
+      var card = document.createElement("section"); card.className = "card";
+      var h = document.createElement("h2"); h.textContent = "Altro giorno · " + giornoLungo(data); card.appendChild(h);
+      var tb = document.createElement("table");
+      perData[data].forEach(function (x) {
+        var a = x.ora.split(":").map(Number), fine = fmtMin(a[0] * 60 + a[1] + ((C.altro && C.altro.slotMinutes) || 5));
+        tb.appendChild(riga(x.ora + "–" + fine, "Genitore di " + x.it.bambino, "Genitore: " + x.it.genitore + (x.it.contatto ? " · " + x.it.contatto : ""), true));
+      });
+      card.appendChild(tb); box.appendChild(card);
+    });
+    var nComune = items.length - altre.length;
+    $("riepilogo").textContent = (items.length === 1 ? "1 colloquio prenotato" : items.length + " colloqui prenotati") +
+      " (" + nComune + " su " + slots.length + " orari il " + (C.labelGiornoUnico || "giorno comune").toLowerCase() + ", " + altre.length + " in altri giorni) · aggiornato alle " +
+      new Date().toLocaleTimeString("it-IT", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  function entra(ev) {
+    if (ev) ev.preventDefault();
+    pin = $("pin").value.trim();
+    if (!pin) return;
+    $("msgLogin").textContent = "Verifica in corso…";
+    carica().then(function () {
+      $("msgLogin").textContent = "";
+      try { if ($("ricorda").checked) localStorage.setItem(KEY, pin); } catch (e) {}
+      $("pin").value = "";
+      timer = setInterval(function () { if (!document.hidden) carica().catch(function () {}); }, 60000);
+    }).catch(function (e) {
+      $("msgLogin").textContent = e.pin ? "Codice non corretto." : (e.message || "Connessione non riuscita. Riprova.");
+      try { if (e.pin) localStorage.removeItem(KEY); } catch (x) {}
+    });
+  }
+
+  function esci() {
+    try { localStorage.removeItem(KEY); } catch (e) {}
+    clearInterval(timer); pin = "";
+    $("agenda").hidden = true; $("login").hidden = false; $("giorni").textContent = "";
+  }
+
+  $("formLogin").addEventListener("submit", entra);
+  $("btnAgg").addEventListener("click", function () { carica().catch(function () { alert("Aggiornamento non riuscito. Riprova."); }); });
+  $("btnStampa").addEventListener("click", function () { window.print(); });
+  $("btnEsci").addEventListener("click", esci);
+
+  try {
+    var salvato = localStorage.getItem(KEY);
+    if (salvato) { $("pin").value = salvato; $("ricorda").checked = true; entra(); }
+  } catch (e) {}
+})();
+</script>
+</body>
+</html>
